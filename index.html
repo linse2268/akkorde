@@ -111,6 +111,7 @@
     letter-spacing: 0.3px;
   }
   .play:hover:not(:disabled) { background: var(--accent-dark); }
+  .play:disabled { opacity: 0.6; }
 
   .answers {
     display: grid;
@@ -165,8 +166,13 @@
 
 <script>
 (function () {
-  const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
   const DISPLAY_NAMES = ["C", "Cis", "D", "Es", "E", "F", "Fis", "G", "As", "A", "B", "H"];
+
+  // Timing der Wiedergabe (Sekunden)
+  const NOTE_GAP = 0.6;       // Abstand zwischen den Einzeltönen
+  const NOTE_LEN = 0.9;       // Länge der Einzeltöne
+  const CHORD_PAUSE = 0.35;   // Pause zwischen Einzeltönen und Akkord
+  const CHORD_LEN = 2.2;      // Länge des Akkords
 
   const els = {
     stats: document.getElementById("stats"),
@@ -179,40 +185,82 @@
     next: document.getElementById("nextBtn"),
   };
 
-  let synth = null;
+  let instrument = null;
   let started = false;
-  let current = null;       // { type: 'major'|'minor', rootIndex }
+  let loading = false;
+  let current = null;
   let answered = false;
   let total = 0;
   let correct = 0;
 
-  function buildSynth() {
-    const filter = new Tone.Filter({ frequency: 2200, type: "lowpass", rolloff: -24 });
-    const reverb = new Tone.Reverb({ decay: 1.8, wet: 0.18 });
-    const limiter = new Tone.Limiter(-3);
-    filter.chain(reverb, limiter, Tone.Destination);
+  // Echte Klavier-Samples (Salamander Grand Piano) – nur einige Stützpunkte,
+  // Tone.Sampler interpoliert die Zwischentöne per Pitch-Shift.
+  function loadPiano() {
+    return new Promise((resolve) => {
+      const reverb = new Tone.Reverb({ decay: 2.2, wet: 0.15 });
+      const comp = new Tone.Compressor(-18, 3);
+      let done = false;
 
-    synth = new Tone.PolySynth(Tone.Synth, {
-      maxPolyphony: 6,
+      const finish = (inst) => {
+        if (done) return;
+        done = true;
+        resolve(inst);
+      };
+
+      const sampler = new Tone.Sampler({
+        urls: {
+          A2: "A2.mp3",
+          C3: "C3.mp3",
+          "D#3": "Ds3.mp3",
+          "F#3": "Fs3.mp3",
+          A3: "A3.mp3",
+          C4: "C4.mp3",
+          "D#4": "Ds4.mp3",
+          "F#4": "Fs4.mp3",
+          A4: "A4.mp3",
+          C5: "C5.mp3",
+          "D#5": "Ds5.mp3",
+        },
+        release: 1.4,
+        baseUrl: "https://tonejs.github.io/audio/salamander/",
+        onload: () => finish(sampler),
+        onerror: () => finish(null),
+      });
+      sampler.chain(comp, reverb, Tone.Destination);
+      sampler.volume.value = -3;
+
+      // Timeout-Fallback bei langsamer/fehlender Verbindung
+      setTimeout(() => finish(null), 15000);
+    });
+  }
+
+  // Notfall-Fallback (offline): einfacher Synth mit klavierartiger Hüllkurve
+  function buildFallbackSynth() {
+    const filter = new Tone.Filter({ frequency: 2600, type: "lowpass", rolloff: -24 });
+    const reverb = new Tone.Reverb({ decay: 1.8, wet: 0.15 });
+    filter.chain(reverb, Tone.Destination);
+    const s = new Tone.PolySynth(Tone.Synth, {
+      maxPolyphony: 8,
       options: {
         oscillator: { type: "triangle" },
-        envelope: { attack: 0.015, decay: 0.45, sustain: 0.35, release: 1.4 },
+        envelope: { attack: 0.01, decay: 0.6, sustain: 0.2, release: 1.2 },
       },
     }).connect(filter);
-    synth.volume.value = -8;
+    s.volume.value = -8;
+    return s;
   }
 
   function randomChord() {
-    const rootIndex = Math.floor(Math.random() * 12);       // C4 ... B4
-    const type = Math.random() < 0.5 ? "major" : "minor";
-    return { type, rootIndex };
+    return {
+      rootIndex: Math.floor(Math.random() * 12),            // C4 ... B4
+      type: Math.random() < 0.5 ? "major" : "minor",
+    };
   }
 
   function chordNotes(chord) {
     const third = chord.type === "major" ? 4 : 3;
-    const intervals = [0, third, 7];
-    const baseMidi = 60 + chord.rootIndex;                  // C4 = MIDI 60
-    return intervals.map(i => Tone.Frequency(baseMidi + i, "midi").toNote());
+    const base = 60 + chord.rootIndex;                      // C4 = MIDI 60
+    return [0, third, 7].map(i => Tone.Frequency(base + i, "midi").toNote());
   }
 
   function chordName(chord) {
@@ -220,9 +268,19 @@
   }
 
   function playChord(chord) {
-    if (!synth) return;
-    synth.releaseAll();
-    synth.triggerAttackRelease(chordNotes(chord), "2n");
+    if (!instrument) return;
+    instrument.releaseAll();
+    const notes = chordNotes(chord);
+    const t0 = Tone.now() + 0.08;
+
+    // 1) Töne einzeln nacheinander
+    notes.forEach((n, i) => {
+      instrument.triggerAttackRelease(n, NOTE_LEN, t0 + i * NOTE_GAP, 0.8);
+    });
+
+    // 2) Danach alle drei zusammen
+    const chordStart = t0 + (notes.length - 1) * NOTE_GAP + NOTE_LEN + CHORD_PAUSE;
+    instrument.triggerAttackRelease(notes, CHORD_LEN, chordStart, 0.75);
   }
 
   function updateStats() {
@@ -231,9 +289,7 @@
   }
 
   function resetButtons() {
-    [els.major, els.minor].forEach(b => {
-      b.classList.remove("correct", "wrong", "reveal", "locked");
-    });
+    [els.major, els.minor].forEach(b => b.classList.remove("correct", "wrong", "reveal", "locked"));
     els.display.classList.remove("good", "bad");
   }
 
@@ -243,14 +299,24 @@
   }
 
   async function ensureAudio() {
-    if (!started) {
-      await Tone.start();
-      buildSynth();
-      started = true;
-    }
+    if (started) return;
+    await Tone.start();
+    loading = true;
+    els.play.disabled = true;
+    els.next.disabled = true;
+    els.main.textContent = "Lade Klavier …";
+    els.sub.textContent = "Einen Moment bitte";
+
+    let inst = await loadPiano();
+    if (!inst) inst = buildFallbackSynth();
+    instrument = inst;
+    started = true;
+    loading = false;
+    els.play.disabled = false;
   }
 
   async function startRound() {
+    if (loading) return;
     await ensureAudio();
     resetButtons();
     answered = false;
@@ -262,10 +328,6 @@
     els.play.textContent = "Nochmal hören";
     setAnswerButtons(true);
     els.next.disabled = true;
-  }
-
-  function replay() {
-    if (current) playChord(current);
   }
 
   function answer(choice) {
@@ -280,7 +342,6 @@
     const chosenBtn = choice === "major" ? els.major : els.minor;
     const otherBtn = choice === "major" ? els.minor : els.major;
 
-    // Buttons sperren, aber Farben sichtbar lassen
     setAnswerButtons(false);
     chosenBtn.classList.add("locked");
     otherBtn.classList.add("locked");
@@ -302,11 +363,8 @@
   }
 
   els.play.addEventListener("click", () => {
-    if (!started || !current) {
-      startRound();
-    } else {
-      replay();
-    }
+    if (!started || !current) startRound();
+    else playChord(current);
   });
   els.major.addEventListener("click", () => answer("major"));
   els.minor.addEventListener("click", () => answer("minor"));
