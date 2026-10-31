@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Dur-Moll-Gehörtrainer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+<style>
+  :root {
+    --bg: #e9e6e0;
+    --surface: #f4f1ec;
+    --text: #3a3f47;
+    --muted: #7b828c;
+    --accent: #8a9bb0;
+    --accent-dark: #6f8199;
+    --good: #a9cfae;
+    --good-text: #2f5236;
+    --bad: #e0a9a4;
+    --bad-text: #6b2f2a;
+    --hint: #cfe3d2;
+    --shadow: 0 6px 18px rgba(58, 63, 71, 0.12);
+  }
+
+  * {
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    touch-action: manipulation;
+  }
+
+  .app {
+    height: 100%;
+    max-width: 480px;
+    margin: 0 auto;
+    padding: max(16px, env(safe-area-inset-top)) 18px max(18px, env(safe-area-inset-bottom));
+    display: grid;
+    grid-template-rows: 48px 1fr 72px 92px 72px;
+    gap: 14px;
+  }
+
+  .stats {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--surface);
+    border-radius: 16px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--muted);
+    box-shadow: var(--shadow);
+    letter-spacing: 0.2px;
+  }
+
+  .display {
+    background: var(--surface);
+    border-radius: 24px;
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 20px;
+    min-height: 0;
+    transition: background 0.25s ease;
+  }
+  .display.good { background: var(--good); color: var(--good-text); }
+  .display.bad  { background: var(--bad);  color: var(--bad-text); }
+
+  .display .main {
+    font-size: clamp(1.5rem, 6vw, 2rem);
+    font-weight: 700;
+    line-height: 1.25;
+  }
+  .display .sub {
+    margin-top: 10px;
+    font-size: 1rem;
+    opacity: 0.75;
+    min-height: 1.3em;
+  }
+
+  button {
+    font: inherit;
+    border: none;
+    cursor: pointer;
+    border-radius: 20px;
+    color: var(--text);
+    box-shadow: var(--shadow);
+    transition: background 0.2s ease, color 0.2s ease, opacity 0.2s ease, transform 0.08s ease;
+  }
+  button:active:not(:disabled) { transform: scale(0.97); }
+  button:disabled { cursor: default; }
+
+  .play {
+    background: var(--accent);
+    color: #f4f1ec;
+    font-size: 1.2rem;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+  }
+  .play:hover:not(:disabled) { background: var(--accent-dark); }
+
+  .answers {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+  .answer {
+    background: var(--surface);
+    font-size: 1.6rem;
+    font-weight: 700;
+    border: 3px solid transparent;
+  }
+  .answer:disabled { opacity: 0.35; }
+  .answer.locked { opacity: 1; }
+  .answer.correct { background: var(--good); color: var(--good-text); opacity: 1; }
+  .answer.wrong   { background: var(--bad);  color: var(--bad-text);  opacity: 1; }
+  .answer.reveal  { background: var(--hint); color: var(--good-text); opacity: 1; border-color: var(--good); }
+
+  .next {
+    background: var(--surface);
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--accent-dark);
+  }
+  .next:disabled { opacity: 0.35; }
+  .next:not(:disabled) { background: var(--accent); color: #f4f1ec; }
+
+  @media (max-height: 560px) {
+    .app { grid-template-rows: 40px 1fr 60px 76px 60px; gap: 10px; }
+    .display .main { font-size: 1.3rem; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="stats" id="stats">Richtig: 0 / 0 (0%)</div>
+
+  <div class="display" id="display">
+    <div class="main" id="mainText">Drücke Start</div>
+    <div class="sub" id="subText">Dur oder Moll?</div>
+  </div>
+
+  <button class="play" id="playBtn">Start</button>
+
+  <div class="answers">
+    <button class="answer" id="majorBtn" disabled>Dur</button>
+    <button class="answer" id="minorBtn" disabled>Moll</button>
+  </div>
+
+  <button class="next" id="nextBtn" disabled>Weiter</button>
+</div>
+
+<script>
+(function () {
+  const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+  const DISPLAY_NAMES = ["C", "Cis", "D", "Es", "E", "F", "Fis", "G", "As", "A", "B", "H"];
+
+  const els = {
+    stats: document.getElementById("stats"),
+    display: document.getElementById("display"),
+    main: document.getElementById("mainText"),
+    sub: document.getElementById("subText"),
+    play: document.getElementById("playBtn"),
+    major: document.getElementById("majorBtn"),
+    minor: document.getElementById("minorBtn"),
+    next: document.getElementById("nextBtn"),
+  };
+
+  let synth = null;
+  let started = false;
+  let current = null;       // { type: 'major'|'minor', rootIndex }
+  let answered = false;
+  let total = 0;
+  let correct = 0;
+
+  function buildSynth() {
+    const filter = new Tone.Filter({ frequency: 2200, type: "lowpass", rolloff: -24 });
+    const reverb = new Tone.Reverb({ decay: 1.8, wet: 0.18 });
+    const limiter = new Tone.Limiter(-3);
+    filter.chain(reverb, limiter, Tone.Destination);
+
+    synth = new Tone.PolySynth(Tone.Synth, {
+      maxPolyphony: 6,
+      options: {
+        oscillator: { type: "triangle" },
+        envelope: { attack: 0.015, decay: 0.45, sustain: 0.35, release: 1.4 },
+      },
+    }).connect(filter);
+    synth.volume.value = -8;
+  }
+
+  function randomChord() {
+    const rootIndex = Math.floor(Math.random() * 12);       // C4 ... B4
+    const type = Math.random() < 0.5 ? "major" : "minor";
+    return { type, rootIndex };
+  }
+
+  function chordNotes(chord) {
+    const third = chord.type === "major" ? 4 : 3;
+    const intervals = [0, third, 7];
+    const baseMidi = 60 + chord.rootIndex;                  // C4 = MIDI 60
+    return intervals.map(i => Tone.Frequency(baseMidi + i, "midi").toNote());
+  }
+
+  function chordName(chord) {
+    return DISPLAY_NAMES[chord.rootIndex] + (chord.type === "major" ? "-Dur" : "-Moll");
+  }
+
+  function playChord(chord) {
+    if (!synth) return;
+    synth.releaseAll();
+    synth.triggerAttackRelease(chordNotes(chord), "2n");
+  }
+
+  function updateStats() {
+    const pct = total === 0 ? 0 : Math.round((correct / total) * 100);
+    els.stats.textContent = `Richtig: ${correct} / ${total} (${pct}%)`;
+  }
+
+  function resetButtons() {
+    [els.major, els.minor].forEach(b => {
+      b.classList.remove("correct", "wrong", "reveal", "locked");
+    });
+    els.display.classList.remove("good", "bad");
+  }
+
+  function setAnswerButtons(enabled) {
+    els.major.disabled = !enabled;
+    els.minor.disabled = !enabled;
+  }
+
+  async function ensureAudio() {
+    if (!started) {
+      await Tone.start();
+      buildSynth();
+      started = true;
+    }
+  }
+
+  async function startRound() {
+    await ensureAudio();
+    resetButtons();
+    answered = false;
+    current = randomChord();
+    playChord(current);
+
+    els.main.textContent = "Welcher Akkord ist das?";
+    els.sub.textContent = "Dur oder Moll?";
+    els.play.textContent = "Nochmal hören";
+    setAnswerButtons(true);
+    els.next.disabled = true;
+  }
+
+  function replay() {
+    if (current) playChord(current);
+  }
+
+  function answer(choice) {
+    if (answered || !current) return;
+    answered = true;
+
+    const isCorrect = choice === current.type;
+    total++;
+    if (isCorrect) correct++;
+    updateStats();
+
+    const chosenBtn = choice === "major" ? els.major : els.minor;
+    const otherBtn = choice === "major" ? els.minor : els.major;
+
+    // Buttons sperren, aber Farben sichtbar lassen
+    setAnswerButtons(false);
+    chosenBtn.classList.add("locked");
+    otherBtn.classList.add("locked");
+
+    if (isCorrect) {
+      chosenBtn.classList.add("correct");
+      els.display.classList.add("good");
+      els.main.textContent = `Richtig! Es war ${chordName(current)}`;
+      els.sub.textContent = "Sehr gut gehört.";
+    } else {
+      chosenBtn.classList.add("wrong");
+      otherBtn.classList.add("reveal");
+      els.display.classList.add("bad");
+      els.main.textContent = `Leider falsch. Es war ${chordName(current)}`;
+      els.sub.textContent = "Beim nächsten Mal klappt's.";
+    }
+
+    els.next.disabled = false;
+  }
+
+  els.play.addEventListener("click", () => {
+    if (!started || !current) {
+      startRound();
+    } else {
+      replay();
+    }
+  });
+  els.major.addEventListener("click", () => answer("major"));
+  els.minor.addEventListener("click", () => answer("minor"));
+  els.next.addEventListener("click", () => {
+    if (!els.next.disabled) startRound();
+  });
+
+  updateStats();
+})();
+</script>
+</body>
+</html>
